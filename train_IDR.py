@@ -22,6 +22,7 @@ from core.utils import init_log
 from dataloader.CASIA_NIR_VIS_IDR import CASIA_NIR_VIS
 import numpy as np
 from load_imglist import ImageList
+import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser(description='PyTorch Light CNN Training')
 parser.add_argument('--arch', '-a', metavar='ARCH', default='LightCNN')
@@ -46,6 +47,8 @@ parser.add_argument('--model', default='IDRnet', type=str, metavar='Model',
                     help='model type: IDRnet')
 parser.add_argument('--resume', default='/root/NIR_VIS_Face_Recognition-master/model/LightCNN_9Layers_checkpoint.pth.tar', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--pretrain', default='model/LightCNN9.tar', type=str, metavar='PATH',
+                    help='path to pretrained model for basic network(default:none)')
 parser.add_argument('--root_path', default='', type=str, metavar='PATH',
                     help='path to root path of images (default: none)')
 parser.add_argument('--train_dir',
@@ -84,9 +87,9 @@ def main():
     basic_params = []
     for name, value in model.module.basic_layer.named_parameters():
         if 'bias' in name:
-            basic_params += [{'params': value, 'lr': 2 * args.lr, 'weight_decay': 0}]  #2
+            basic_params += [{'params': value, 'lr': 0.1 * args.lr, 'weight_decay': 0}]  #2
         else:
-            basic_params += [{'params': value, 'lr': 1 * args.lr}] #1
+            basic_params += [{'params': value, 'lr': 0.1 * args.lr}] #1
     
     basic_opt = torch.optim.SGD(basic_params, args.lr,
                                 momentum=args.momentum,
@@ -131,6 +134,26 @@ def main():
             #print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
+
+    if args.pretrain:
+        if os.path.isfile(args.pretrain):
+            print("=> loading pretrain model for basic model '{}'".format(args.pretrain))
+            checkpoint = torch.load(args.pretrain)
+            if 'LightCNN9' in args.pretrain:
+                del(checkpoint['state_dict']['module.fc1.filter.weight'])
+                del(checkpoint['state_dict']['module.fc1.filter.bias'])
+                del(checkpoint['state_dict']['module.fc2.weight'])
+                del(checkpoint['state_dict']['module.fc2.bias'])
+                name = [key[7:] for key in checkpoint['state_dict'].keys()]
+                value = checkpoint['state_dict'].values()
+                new_state_dict = dict(zip(name, value))
+                #print(list(checkpoint['state_dict'].keys()))
+                model_dict = model.module.basic_layer.state_dict()
+                model_dict.update(new_state_dict)
+                model.module.basic_layer.load_state_dict(model_dict)
+        else:
+            print("=> no checkpoint found at '{}'".format(args.pretrain))
+
     weight_init(model)
     cudnn.benchmark = True
 
@@ -157,17 +180,13 @@ def main():
             cri.cuda()
 
     validate(val_loader, model, criterion)
-
+    loss_list = []
     for epoch in range(args.start_epoch, args.epochs):
-        if epoch == 50:
-            print('Change lr')
-            for param_group in basic_opt.param_groups:
-                param_group['lr'] = 1e-5
-            for param_group in feat_opt.param_groups:
-                param_group['lr'] = 1e-5
+        adjust_learning_rate(optimizer[0], epoch)
+        adjust_learning_rate(optimizer[1], epoch)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch)
+        train(train_loader, model, criterion, optimizer, epoch, loss_list)
 
         # evaluate on validation set
         prec1 = validate(val_loader, model, criterion)
@@ -179,9 +198,13 @@ def main():
             'state_dict': model.state_dict(),
             'prec1': prec1,
         }, save_name)
+    plt.plot(np.arange(args.start_epoch, args.epochs).astype(np.str), loss_list,  marker = 'o', color = 'r')
+    plt.xlabel('epochs')
+    plt.ylabel('train loss')
+    plt.savefig('pci.png')
 
 
-def train(train_loader, model, criterion, optimizer, epoch):
+def train(train_loader, model, criterion, optimizer, epoch, loss_list):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -200,7 +223,6 @@ def train(train_loader, model, criterion, optimizer, epoch):
         input_var = torch.autograd.Variable(input)
         target_var = torch.autograd.Variable(target)
         idt_var = torch.autograd.Variable(idt)
-
         # compute output
         output, _ = model(input_var, idt_var)
         basic_loss = criterion[0](output, target_var)
@@ -216,7 +238,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         output, _ = model(input_var, idt_var)
         loss = criterion[1](output, target_var, w, pn, pv)
         optimizer[1].zero_grad()
-        basic_loss.backward()
+        loss.backward()
         optimizer[1].step()
 
         # measure accuracy and record loss
@@ -239,7 +261,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
                   'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
                 epoch, i, len(train_loader), batch_time=batch_time,
                 data_time=data_time, loss=losses, top1=top1, top5=top5))
-
+    loss_list.append(losses.avg)
 
 def validate(val_loader, model, criterion):
     batch_time = AverageMeter()
@@ -326,12 +348,22 @@ def weight_init(model):
             print(name)
             nn.init.uniform_(param, -1.0/(param.size(0) ** 0.5), 1.0 / (param.size(0) ** 0.5))
 
+def adjust_learning_rate(optimizer, epoch):
+    scale = 0.457305051927326
+    step  = 10
+    lr = args.lr * (scale ** (epoch // step))
+    print('lr: {}'.format(lr))
+    if (epoch != 0) & (epoch % step == 0):
+        print('Change lr')
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = param_group['lr'] * scale
+
 class IDRLoss(nn.Module):
     def __init__(self, lamda=2e-4):
         super(IDRLoss, self).__init__()
         self.lamda = lamda
         self.ce_loss = nn.CrossEntropyLoss()
-    
+
     def forward(self, x, target, w, pn, pv):
         loss1 = self.ce_loss(x, target)
         loss2 = self.lamda * (torch.norm(torch.mm(pn.t(), w), p='fro') ** 2) + \

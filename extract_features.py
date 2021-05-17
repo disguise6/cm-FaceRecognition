@@ -10,12 +10,12 @@ import argparse
 import os
 import shutil
 import time
-
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-
+from core import IDR
 import torch.optim
 import torch.utils.data
 import torch.nn.functional as F
@@ -24,23 +24,21 @@ import torchvision.datasets as datasets
 from PIL import Image
 import numpy as np
 import cv2
-
-from core.light_cnn import LightCNN_9Layers, LightCNN_29Layers, LightCNN_29Layers_v2
 from load_imglist import ImageList
 
 # Use default value
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Feature Extracting')
 parser.add_argument('--arch', '-a', metavar='ARCH', default='LightCNN')
 parser.add_argument('--cuda', '-c', default=True)
-parser.add_argument('--model', default='LightCNN-29', type=str, metavar='Model',
+parser.add_argument('--model', default='IDRnet', type=str, metavar='Model',
                     help='model type: LightCNN-9, LightCNN-29')
-parser.add_argument('--num_classes', default=836, type=int,
+parser.add_argument('--num_classes', default=839, type=int,
                     metavar='N', help='mini-batch size (default: 713)')
 
 ## input if necessary
 parser.add_argument('--root_path', default='', type=str, metavar='PATH', 
                     help='root path of face images (default: none).')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
+parser.add_argument('--resume', default='model/tmp/lightCNN_60_checkpoint.pth.tar', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--img_list', default='', type=str, metavar='PATH', 
                     help='list of face images for feature extraction (default: none).')
@@ -75,13 +73,9 @@ def excute():
     if args.protocols == '':
         args.protocols = 'MyProtocols'
     
-    if args.model == 'LightCNN-9':
-        model = LightCNN_9Layers(num_classes=args.num_classes)
-    elif args.model == 'LightCNN-29':
-        model = LightCNN_29Layers(num_classes=args.num_classes)
-    elif args.model == 'LightCNN-29v2':
-        args.num_classes = 839
-        model = LightCNN_29Layers_v2(num_classes=args.num_classes)
+    # create Light CNN for face recognition
+    if args.model == 'IDRnet':
+        model = IDR.IDRnet(num_classes=args.num_classes)
     else:
         print('Error model type\n')
 
@@ -89,26 +83,17 @@ def excute():
     if args.cuda:
         model = torch.nn.DataParallel(model).cuda()
 
+    # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
-            #args.start_epoch = checkpoint['epoch']
-            #print(list(checkpoint['state_dict'].keys())[-2:])
-            del(checkpoint['state_dict']['module.fc2.weight'])
-            del(checkpoint['state_dict']['module.fc2.bias'])
-            model_dict = model.state_dict()
-            model_dict.update(checkpoint['state_dict'])
-            #print(model_dict)
-            #print(model_dict.keys())
-            model.load_state_dict(model_dict)
-            #exit()
-            #print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+            model.load_state_dict(checkpoint['state_dict'])
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
-    gallery_file_list = 'nir_gallery.txt'
-    probe_file_list = 'vis_probe.txt'
+    gallery_file_list = 'mix_vis_gallery.txt'
+    probe_file_list = 'mix_nir_probe.txt'
     import glob2
     
     gallery_file_list = glob2.glob(args.root_path + '/' + args.protocols + '/' + gallery_file_list)
@@ -315,6 +300,11 @@ def compute_metric(score, probe_names, gallery_names, g_count, probe_img_list, g
 def feature_extract(img_name, input, transform, model, root_path):
     # 得到标签
     target = img_name.split("\\")[-2]
+    type_str = img_name.split("\\")[1][:3]
+    #print('type_str:{}'.format(type_str))
+    idt = 0
+    if type_str == 'VIS':
+        idt = 1
     # print(target)
     img_name = '/'.join(img_name.split('\\'))
     # print(img_name)
@@ -325,33 +315,19 @@ def feature_extract(img_name, input, transform, model, root_path):
     
     if img is None:
         print('image not found')
-        print(os.path.join(path, img_name))
-        pp = os.path.join(path, img_name).split('/')
-        temp = pp[-1].split('.')
-        print(temp)
-        if temp[-1] == 'bmp':
-            temp[-1] = 'jpg'
-        elif temp[-1] == 'jpg':
-            temp[-1] = 'bmp'
-        temp = '.'.join(temp)
-        print(temp)
-        pp[-1] = temp
-        i_p = '/'.join(pp)
-        print(i_p)
-        img = cv2.imread(i_p, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            print('image not found')
-            print(i_p)
-            exit()
 
     input[0, :, :, :] = img
     #print(input.shape)
 
-    input = input.cuda()
+    input = torch.tensor(input).cuda()
+    #print(type(input))
+    idt = torch.tensor(idt).reshape((1, )).cuda()
+    #print(idt.size())
     with torch.no_grad():
         input_var = torch.autograd.Variable(input)
+        idt = torch.autograd.Variable(idt)
 
-    _, features = model(input_var)
+    _, features = model(input_var, idt)
     # the type of features is a tensor.cuda, which means your data in GPU cache
     # in order to calculate it with numpy array in cpu, needs to replicate your data to cpu first
     # features.data.cpu().numpy()[0]
