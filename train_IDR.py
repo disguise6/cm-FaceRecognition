@@ -45,7 +45,7 @@ parser.add_argument('--print-freq', '-p', default=20, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--model', default='IDRnet', type=str, metavar='Model',
                     help='model type: IDRnet')
-parser.add_argument('--resume', default='/root/NIR_VIS_Face_Recognition-master/model/LightCNN_9Layers_checkpoint.pth.tar', type=str, metavar='PATH',
+parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--pretrain', default='model/LightCNN9.tar', type=str, metavar='PATH',
                     help='path to pretrained model for basic network(default:none)')
@@ -87,9 +87,9 @@ def main():
     basic_params = []
     for name, value in model.module.basic_layer.named_parameters():
         if 'bias' in name:
-            basic_params += [{'params': value, 'lr': 0.1 * args.lr, 'weight_decay': 0}]  #2
+            basic_params += [{'params': value, 'lr': 0.01 * args.lr, 'weight_decay': 0}]  #2
         else:
-            basic_params += [{'params': value, 'lr': 0.1 * args.lr}] #1
+            basic_params += [{'params': value, 'lr': 0.01 * args.lr}] #1
     
     basic_opt = torch.optim.SGD(basic_params, args.lr,
                                 momentum=args.momentum,
@@ -99,14 +99,18 @@ def main():
     for name, value in model.module.feature_layer.named_parameters():
         if 'bias' in name:
             if 'fc' in name: #fc2.bias
-                feat_params += [{'params': value, 'lr': 0.1 * args.lr, 'weight_decay': 0}]
+                print('fc + bias : ' + name)
+                feat_params += [{'params': value, 'lr': 1 * args.lr, 'weight_decay': 0}]
             else: #bias
-                feat_params += [{'params': value, 'lr': 0.1 * args.lr, 'weight_decay': 0}]
+                print('bias : ' + name)
+                feat_params += [{'params': value, 'lr': 1 * args.lr, 'weight_decay': 0}]
         else:  
             if 'fc' in name: #fc.weight
-                feat_params += [{'params': value, 'lr': 0.1 * args.lr}]
+                print('fc + weight : ' + name)
+                feat_params += [{'params': value, 'lr': 1 * args.lr}]
             else:  #weight
-                feat_params += [{'params': value, 'lr': 0.1 * args.lr}]
+                print('weight:' + name)
+                feat_params += [{'params': value, 'lr': 1 * args.lr}]
     feat_opt = torch.optim.SGD(feat_params, args.lr, momentum = args.momentum, weight_decay = args.weight_decay)
     
     optimizer = [basic_opt, feat_opt]
@@ -350,7 +354,7 @@ def weight_init(model):
 
 def adjust_learning_rate(optimizer, epoch):
     scale = 0.457305051927326
-    step  = 10
+    step  = 35
     lr = args.lr * (scale ** (epoch // step))
     print('lr: {}'.format(lr))
     if (epoch != 0) & (epoch % step == 0):
@@ -359,7 +363,7 @@ def adjust_learning_rate(optimizer, epoch):
             param_group['lr'] = param_group['lr'] * scale
 
 class IDRLoss(nn.Module):
-    def __init__(self, lamda=2e-4):
+    def __init__(self, lamda= 0.95):
         super(IDRLoss, self).__init__()
         self.lamda = lamda
         self.ce_loss = nn.CrossEntropyLoss()
@@ -368,8 +372,8 @@ class IDRLoss(nn.Module):
         loss1 = self.ce_loss(x, target)
         loss2 = self.lamda * (torch.norm(torch.mm(pn.t(), w), p='fro') ** 2) + \
                         self.lamda * (torch.norm(torch.mm(pv.t(), w), p = 'fro') ** 2)
-        #print('loss1 : {}, loss2: {}'.format(loss1, loss2))
+        print('loss1 : {}, loss2: {}'.format(loss1, loss2))
         return loss1 + loss2
-
+        
 if __name__ == '__main__':
     main()
