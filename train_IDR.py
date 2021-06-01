@@ -11,6 +11,7 @@ from torch.nn import DataParallel
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+from torch.nn.parameter import Parameter
 import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
@@ -19,7 +20,7 @@ import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
 from core import IDR
 from core.utils import init_log
-from dataloader.CASIA_NIR_VIS_IDR import CASIA_NIR_VIS
+from dataloader.CASIA_NIR_VIS_IDR2 import CASIA_NIR_VIS
 import numpy as np
 from load_imglist import ImageList
 import matplotlib.pyplot as plt
@@ -33,8 +34,8 @@ parser.add_argument('--epochs', default=70, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=128, type=int,
-                    metavar='N', help='mini-batch size (default: 128)')
+parser.add_argument('-b', '--batch-size', default=256, type=int,
+                    metavar='N', help='mini-batch size (default:s 128)')
 parser.add_argument('--lr', '--learning-rate', default=1e-2, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
@@ -52,15 +53,15 @@ parser.add_argument('--pretrain', default='model/LightCNN9.tar', type=str, metav
 parser.add_argument('--root_path', default='', type=str, metavar='PATH',
                     help='path to root path of images (default: none)')
 parser.add_argument('--train_dir',
-                    default='/root/NIR_VIS_Face_Recognition-master/dataset/CASIA_NIR_VIS_2.0/NIR-VIS-2.0', type=str,
+                    default='/mnt/traffic/fkq/NIR_VIS_Face_Recognition-master/dataset/CASIA-NIR-VIS-2.0/NIR-VIS-2.0', type=str,
                     metavar='PATH',
                     help='path to training list (default: none)')
-parser.add_argument('--val_dir', default='/root/NIR_VIS_Face_Recognition-master/dataset/CASIA_NIR_VIS_2.0/NIR-VIS-2.0',
+parser.add_argument('--val_dir', default='/mnt/traffic/fkq/NIR_VIS_Face_Recognition-master/dataset/CASIA-NIR-VIS-2.0/NIR-VIS-2.0',
                     type=str, metavar='PATH',
                     help='path to validation list (default: none)')
 parser.add_argument('--save_path', default='model/tmp/', type=str, metavar='PATH',
                     help='path to save checkpoint (default: none)')
-parser.add_argument('--num_classes', default=839, type=int,
+parser.add_argument('--num_classes', default=321, type=int,
                     metavar='N', help='number of classes')
 
 
@@ -71,12 +72,18 @@ def main():
     # create Light CNN for face recognition
     if args.model == 'IDRnet':
         model = IDR.IDRnet(num_classes=args.num_classes)
+        print('use IDRnet')
     else:
         print('Error model type\n')
 
+    
+    print(torch.cuda.current_device())
+    print(torch.cuda.device_count())
+    print(torch.cuda.current_device())
+    device_ids = [0, 1, 2, 3]
     if args.cuda:
-        model = torch.nn.DataParallel(model).cuda()
-
+        model = torch.nn.DataParallel(model, device_ids).cuda()
+  
     '''
     print(model.module)
     for name, value in model.named_parameters():
@@ -87,9 +94,9 @@ def main():
     basic_params = []
     for name, value in model.module.basic_layer.named_parameters():
         if 'bias' in name:
-            basic_params += [{'params': value, 'lr': 0.01 * args.lr, 'weight_decay': 0}]  #2
+            basic_params += [{'params': value, 'lr': 0.001 * args.lr, 'weight_decay': 0}]  #2
         else:
-            basic_params += [{'params': value, 'lr': 0.01 * args.lr}] #1
+            basic_params += [{'params': value, 'lr': 0.001 * args.lr}] #1
     
     basic_opt = torch.optim.SGD(basic_params, args.lr,
                                 momentum=args.momentum,
@@ -100,18 +107,20 @@ def main():
         if 'bias' in name:
             if 'fc' in name: #fc2.bias
                 print('fc + bias : ' + name)
-                feat_params += [{'params': value, 'lr': 1 * args.lr, 'weight_decay': 0}]
+                feat_params += [{'params': value, 'lr': 0.95 * args.lr, 'weight_decay': 0}]
             else: #bias
                 print('bias : ' + name)
-                feat_params += [{'params': value, 'lr': 1 * args.lr, 'weight_decay': 0}]
+                feat_params += [{'params': value, 'lr': 0.95 * args.lr, 'weight_decay': 0}]
         else:  
             if 'fc' in name: #fc.weight
                 print('fc + weight : ' + name)
-                feat_params += [{'params': value, 'lr': 1 * args.lr}]
+                feat_params += [{'params': value, 'lr': 0.95 * args.lr}]
             else:  #weight
                 print('weight:' + name)
-                feat_params += [{'params': value, 'lr': 1 * args.lr}]
-    feat_opt = torch.optim.SGD(feat_params, args.lr, momentum = args.momentum, weight_decay = args.weight_decay)
+                feat_params += [{'params': value, 'lr': 0.95 * args.lr}]
+    feat_opt = torch.optim.SGD(feat_params, args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.weight_decay)
     
     optimizer = [basic_opt, feat_opt]
     
@@ -123,7 +132,6 @@ def main():
             args.start_epoch = 0
             checkpoint = torch.load(args.resume)
             if 'LightCNN9' in args.resume:
-                print(here)
                 del(checkpoint['state_dict']['module.fc1.filter.weight'])
                 del(checkpoint['state_dict']['module.fc1.filter.bias'])
                 del(checkpoint['state_dict']['module.fc2.weight'])
@@ -164,6 +172,7 @@ def main():
     # load image
     all_transform = transforms.Compose([
         transforms.Grayscale(1),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
     ])
     # define trainloader and testloader
@@ -228,7 +237,7 @@ def train(train_loader, model, criterion, optimizer, epoch, loss_list):
         target_var = torch.autograd.Variable(target)
         idt_var = torch.autograd.Variable(idt)
         # compute output
-        output, _ = model(input_var, idt_var)
+        output, _, _ = model(input_var, idt_var)
         basic_loss = criterion[0](output, target_var)
 
         # compute gradient and do SGD step
@@ -239,7 +248,7 @@ def train(train_loader, model, criterion, optimizer, epoch, loss_list):
         pn = model.module.feature_layer.unique_mfm1.filter.weight
         pv = model.module.feature_layer.unique_mfm2.filter.weight
         w = model.module.feature_layer.shared_mfm.filter.weight
-        output, _ = model(input_var, idt_var)
+        output, _, _ = model(input_var, idt_var)
         loss = criterion[1](output, target_var, w, pn, pv)
         optimizer[1].zero_grad()
         loss.backward()
@@ -287,12 +296,15 @@ def validate(val_loader, model, criterion):
         idt_var = idt.clone().detach()
 
         # compute output
-        output, _ = model(input_var, idt_var)
+        output, _, _ = model(input_var, idt_var)
         #print('output.shape: {}'.format(output.shape))
         pn = model.module.feature_layer.unique_mfm1.filter.weight
+        #print('pn.shape: {}'.format(pn.shape))
         pv = model.module.feature_layer.unique_mfm2.filter.weight
+        #print('pv.shape: {}'.format(pv.shape))
         w = model.module.feature_layer.shared_mfm.filter.weight
         loss = criterion[1](output, target_var, w, pn, pv)
+        #loss = criterion[0](output, target_var)
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
@@ -331,26 +343,31 @@ def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k"""
     maxk = max(topk)
     batch_size = target.size(0)
-
-    # (batch, feature)，从每个feature选择topk
+    #print(target.shape)
+    # (batch, feature)，从每个feature选择概率topk的类别
     _, pred = output.topk(maxk, 1, True, True)
     # 转置
     pred = pred.t()
     correct = pred.eq(target.view(1, -1).expand_as(pred))
-
+    #print(correct)
     res = []
     for k in topk:
         # 计算有多少个预测正确
-        correct_k = correct[:k].view(-1).float().sum(0)
+        correct_k = correct[:k].contiguous()
+        correct_k = correct_k.view(-1)
+        #print(correct_k)
+        correct_k = correct_k.float()
+        correct_k = correct_k.sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
 def weight_init(model):
     #print(type(model.named_parameters()))
+    dim = 256
     for name, param in model.named_parameters():
         if 'mfm' in name and 'weight' in name:
             print(name)
-            nn.init.uniform_(param, -1.0/(param.size(0) ** 0.5), 1.0 / (param.size(0) ** 0.5))
+            nn.init.uniform_(param, -1.0/(dim ** 0.5), 1.0 / (dim ** 0.5))
 
 def adjust_learning_rate(optimizer, epoch):
     scale = 0.457305051927326
@@ -362,16 +379,20 @@ def adjust_learning_rate(optimizer, epoch):
         for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr'] * scale
 
+
 class IDRLoss(nn.Module):
-    def __init__(self, lamda= 0.95):
+    def __init__(self, w, pn, pv, lamda= 2):
         super(IDRLoss, self).__init__()
         self.lamda = lamda
+        self.w = Parameter(torch.Tensor(w))
+        self.pn = Parameter(torch.Tensor(pn))
+        self.pv = Parameter(torch.Tensor(pv))
         self.ce_loss = nn.CrossEntropyLoss()
 
-    def forward(self, x, target, w, pn, pv):
+    def forward(self, x, target):
         loss1 = self.ce_loss(x, target)
-        loss2 = self.lamda * (torch.norm(torch.mm(pn.t(), w), p='fro') ** 2) + \
-                        self.lamda * (torch.norm(torch.mm(pv.t(), w), p = 'fro') ** 2)
+        loss2 = self.lamda * (torch.norm(torch.mm(self.pn.t(), self.w), p='fro') ** 2) + \
+                        self.lamda * (torch.norm(torch.mm(self.pv.t(), self.w), p='fro') ** 2)
         print('loss1 : {}, loss2: {}'.format(loss1, loss2))
         return loss1 + loss2
         
